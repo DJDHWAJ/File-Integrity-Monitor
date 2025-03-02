@@ -6,12 +6,12 @@ from watchdog.events import FileSystemEventHandler
 # log stuff
 logging.basicConfig(filename="file_log.log", level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 
-# config (emails??)
-EMAIL_TO = "your_email@example.com"
+# config (for the furutre if i ever want to add email stuff)
+EMAIL_TO = "abcdbkhjasgdjjd@example.com"
 SMTP_ADDR = "smtp.example.com"
 SMTP_PORT = 587
-EMAIL_USER = "your_email@example.com"
-EMAIL_PASS = "your_password"
+EMAIL_USER = "askudgjaksbdn@example.com"
+EMAIL_PASS = "somethingpassword"
 
 # folder to check (not sure if this is the best place)
 DIR_TO_WATCH = "watch_this/"
@@ -19,7 +19,7 @@ HASH_FILE = "file_data.json"
 
 DEBUG = False  # set to True if you wanna debug
 
-# function to get file hash (does this work??)
+# function to get file hash
 def getHash(fpath):
     try:
         h = hashlib.sha256()
