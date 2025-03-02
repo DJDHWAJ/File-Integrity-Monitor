@@ -22,6 +22,9 @@ SMTP_PASS = "your_password"
 MONITOR_DIR = "monitor_dir/"
 INTEGRITY_FILE = "file_integrity.json"
 
+# Debug Mode (Set to True for debugging)
+DEBUG = False  
+
 # Function to compute SHA256 hash of a file
 def compute_hash(file_path):
     try:
@@ -30,35 +33,45 @@ def compute_hash(file_path):
             while chunk := f.read(4096):
                 hasher.update(chunk)
         return hasher.hexdigest()
+    except FileNotFoundError:
+        logging.error(f"File not found: {file_path}")
     except Exception as e:
         logging.error(f"Error computing hash for {file_path}: {e}")
-        return None
+    return None
 
 # Function to load integrity baseline
 def load_integrity_baseline():
     if os.path.exists(INTEGRITY_FILE):
-        with open(INTEGRITY_FILE, "r") as f:
-            return json.load(f)
+        try:
+            with open(INTEGRITY_FILE, "r") as f:
+                return json.load(f)
+        except json.JSONDecodeError:
+            logging.error("Error loading integrity file. It may be corrupted.")
     return {}
 
 # Function to save integrity baseline
 def save_integrity_baseline(data):
-    with open(INTEGRITY_FILE, "w") as f:
-        json.dump(data, f, indent=4)
+    try:
+        with open(INTEGRITY_FILE, "w") as f:
+            json.dump(data, f, indent=4)
+    except Exception as e:
+        logging.error(f"Failed to save integrity baseline: {e}")
 
 # Function to send email alerts
 def send_alert(subject, message):
+    if DEBUG:
+        print(f"DEBUG: Would send email - {subject}")
+
     try:
         msg = MIMEText(message)
         msg["From"] = SMTP_USER
         msg["To"] = ALERT_EMAIL
         msg["Subject"] = subject
 
-        server = smtplib.SMTP(SMTP_SERVER, SMTP_PORT)
-        server.starttls()
-        server.login(SMTP_USER, SMTP_PASS)
-        server.sendmail(SMTP_USER, ALERT_EMAIL, msg.as_string())
-        server.quit()
+        with smtplib.SMTP(SMTP_SERVER, SMTP_PORT) as server:
+            server.starttls()
+            server.login(SMTP_USER, SMTP_PASS)
+            server.sendmail(SMTP_USER, ALERT_EMAIL, msg.as_string())
 
         logging.info(f"Alert sent: {subject}")
     except Exception as e:
@@ -69,38 +82,50 @@ class IntegrityMonitor(FileSystemEventHandler):
     def __init__(self, baseline):
         self.baseline = baseline
 
-    def on_modified(self, event):
-        if not event.is_directory:
-            new_hash = compute_hash(event.src_path)
-            old_hash = self.baseline.get(event.src_path)
+    def process_event(self, event, event_type):
+        if event.is_directory:
+            return
+        
+        file_path = event.src_path
+        new_hash = compute_hash(file_path)
 
+        if event_type == "modified":
+            old_hash = self.baseline.get(file_path)
             if old_hash and new_hash and old_hash != new_hash:
-                logging.warning(f"File modified: {event.src_path}")
-                send_alert("File Integrity Alert", f"File modified: {event.src_path}")
-                self.baseline[event.src_path] = new_hash
+                logging.warning(f"File modified: {file_path}")
+                send_alert("File Integrity Alert", f"File modified: {file_path}")
+                self.baseline[file_path] = new_hash
                 save_integrity_baseline(self.baseline)
+
+        elif event_type == "created" and new_hash:
+            logging.warning(f"New file created: {file_path}")
+            send_alert("File Integrity Alert", f"New file created: {file_path}")
+            self.baseline[file_path] = new_hash
+            save_integrity_baseline(self.baseline)
+
+        elif event_type == "deleted":
+            logging.warning(f"File deleted: {file_path}")
+            send_alert("File Integrity Alert", f"File deleted: {file_path}")
+            if file_path in self.baseline:
+                del self.baseline[file_path]
+                save_integrity_baseline(self.baseline)
+
+    def on_modified(self, event):
+        self.process_event(event, "modified")
 
     def on_created(self, event):
-        if not event.is_directory:
-            new_hash = compute_hash(event.src_path)
-            if new_hash:
-                logging.warning(f"New file created: {event.src_path}")
-                send_alert("File Integrity Alert", f"New file created: {event.src_path}")
-                self.baseline[event.src_path] = new_hash
-                save_integrity_baseline(self.baseline)
+        self.process_event(event, "created")
 
     def on_deleted(self, event):
-        if not event.is_directory:
-            logging.warning(f"File deleted: {event.src_path}")
-            send_alert("File Integrity Alert", f"File deleted: {event.src_path}")
-            if event.src_path in self.baseline:
-                del self.baseline[event.src_path]
-                save_integrity_baseline(self.baseline)
+        self.process_event(event, "deleted")
 
 # Function to initialize the integrity baseline
 def initialize_baseline():
     logging.info("Initializing file integrity baseline...")
     baseline = {}
+    if not os.path.exists(MONITOR_DIR):
+        logging.warning(f"Monitor directory '{MONITOR_DIR}' does not exist. Creating it now.")
+        os.makedirs(MONITOR_DIR)
     for root, _, files in os.walk(MONITOR_DIR):
         for file in files:
             file_path = os.path.join(root, file)
