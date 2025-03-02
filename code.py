@@ -1,162 +1,156 @@
-import os
-import hashlib
-import json
-import time
-import logging
-import smtplib
+import os, hashlib, json, time, logging, smtplib
 from email.mime.text import MIMEText
 from watchdog.observers import Observer
 from watchdog.events import FileSystemEventHandler
 
-# Configure Logging
-logging.basicConfig(filename="file_integrity.log", level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
+# log stuff
+logging.basicConfig(filename="file_log.log", level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 
-# Email Configuration (Optional: Uncomment & Configure)
-ALERT_EMAIL = "your_email@example.com"
-SMTP_SERVER = "smtp.example.com"
+# config (emails??)
+EMAIL_TO = "your_email@example.com"
+SMTP_ADDR = "smtp.example.com"
 SMTP_PORT = 587
-SMTP_USER = "your_email@example.com"
-SMTP_PASS = "your_password"
+EMAIL_USER = "your_email@example.com"
+EMAIL_PASS = "your_password"
 
-# Directory to Monitor
-MONITOR_DIR = "monitor_dir/"
-INTEGRITY_FILE = "file_integrity.json"
+# folder to check (not sure if this is the best place)
+DIR_TO_WATCH = "watch_this/"
+HASH_FILE = "file_data.json"
 
-# Debug Mode (Set to True for debugging)
-DEBUG = False  
+DEBUG = False  # set to True if you wanna debug
 
-# Function to compute SHA256 hash of a file
-def compute_hash(file_path):
+# function to get file hash (does this work??)
+def getHash(fpath):
     try:
-        hasher = hashlib.sha256()
-        with open(file_path, "rb") as f:
-            while chunk := f.read(4096):
-                hasher.update(chunk)
-        return hasher.hexdigest()
+        h = hashlib.sha256()
+        with open(fpath, "rb") as file:
+            while chunk := file.read(4096):  
+                h.update(chunk)
+        return h.hexdigest()
     except FileNotFoundError:
-        logging.error(f"File not found: {file_path}")
+        logging.error(f"Missing file: {fpath}")
     except Exception as e:
-        logging.error(f"Error computing hash for {file_path}: {e}")
+        logging.error(f"hash fail {fpath}: {e}")
     return None
 
-# Function to load integrity baseline
-def load_integrity_baseline():
-    if os.path.exists(INTEGRITY_FILE):
+# load stored hashes
+def loadHashes():
+    if os.path.exists(HASH_FILE):
         try:
-            with open(INTEGRITY_FILE, "r") as f:
+            with open(HASH_FILE, "r") as f:
                 return json.load(f)
         except json.JSONDecodeError:
-            logging.error("Error loading integrity file. It may be corrupted.")
+            logging.error("bad hash file, maybe corrupted?")
     return {}
 
-# Function to save integrity baseline
-def save_integrity_baseline(data):
+# save new hashes
+def saveHashes(d):
     try:
-        with open(INTEGRITY_FILE, "w") as f:
-            json.dump(data, f, indent=4)
+        with open(HASH_FILE, "w") as f:
+            json.dump(d, f, indent=4)
     except Exception as e:
-        logging.error(f"Failed to save integrity baseline: {e}")
+        logging.error(f"cant save hashes: {e}")
 
-# Function to send email alerts
-def send_alert(subject, message):
+# send warning emails (if enabled)
+def emailWarn(subj, msg):
     if DEBUG:
-        print(f"DEBUG: Would send email - {subject}")
+        print(f"DEBUG: Would send email - {subj}")
 
     try:
-        msg = MIMEText(message)
-        msg["From"] = SMTP_USER
-        msg["To"] = ALERT_EMAIL
-        msg["Subject"] = subject
+        em = MIMEText(msg)
+        em["From"] = EMAIL_USER
+        em["To"] = EMAIL_TO
+        em["Subject"] = subj
 
-        with smtplib.SMTP(SMTP_SERVER, SMTP_PORT) as server:
-            server.starttls()
-            server.login(SMTP_USER, SMTP_PASS)
-            server.sendmail(SMTP_USER, ALERT_EMAIL, msg.as_string())
+        with smtplib.SMTP(SMTP_ADDR, SMTP_PORT) as srv:
+            srv.starttls()
+            srv.login(EMAIL_USER, EMAIL_PASS)
+            srv.sendmail(EMAIL_USER, EMAIL_TO, em.as_string())
 
-        logging.info(f"Alert sent: {subject}")
+        logging.info(f"Email sent: {subj}")
     except Exception as e:
-        logging.error(f"Failed to send alert: {e}")
+        logging.error(f"email fail: {e}")
 
-# Class for monitoring file system changes
-class IntegrityMonitor(FileSystemEventHandler):
-    def __init__(self, baseline):
-        self.baseline = baseline
+# watch files 
+class FileWatch(FileSystemEventHandler):
+    def __init__(self, base):
+        self.base = base
 
-    def process_event(self, event, event_type):
+    def checkEvent(self, event, eType):
         if event.is_directory:
             return
         
-        file_path = event.src_path
-        new_hash = compute_hash(file_path)
+        fpath = event.src_path
+        newHash = getHash(fpath)
 
-        if event_type == "modified":
-            old_hash = self.baseline.get(file_path)
-            if old_hash and new_hash and old_hash != new_hash:
-                logging.warning(f"File modified: {file_path}")
-                send_alert("File Integrity Alert", f"File modified: {file_path}")
-                self.baseline[file_path] = new_hash
-                save_integrity_baseline(self.baseline)
+        if eType == "mod":
+            oldHash = self.base.get(fpath)
+            if oldHash and newHash and oldHash != newHash:
+                logging.warning(f"MODIFIED!!: {fpath}")
+                emailWarn("Alert: File Changed", f"mod: {fpath}")
+                self.base[fpath] = newHash
+                saveHashes(self.base)
 
-        elif event_type == "created" and new_hash:
-            logging.warning(f"New file created: {file_path}")
-            send_alert("File Integrity Alert", f"New file created: {file_path}")
-            self.baseline[file_path] = new_hash
-            save_integrity_baseline(self.baseline)
+        elif eType == "new" and newHash:
+            logging.warning(f"NEW FILE: {fpath}")
+            emailWarn("Alert: New File", f"new: {fpath}")
+            self.base[fpath] = newHash
+            saveHashes(self.base)
 
-        elif event_type == "deleted":
-            logging.warning(f"File deleted: {file_path}")
-            send_alert("File Integrity Alert", f"File deleted: {file_path}")
-            if file_path in self.baseline:
-                del self.baseline[file_path]
-                save_integrity_baseline(self.baseline)
+        elif eType == "gone":
+            logging.warning(f"DELETED: {fpath}")
+            emailWarn("Alert: File Gone", f"deleted: {fpath}")
+            if fpath in self.base:
+                del self.base[fpath]
+                saveHashes(self.base)
 
     def on_modified(self, event):
-        self.process_event(event, "modified")
+        self.checkEvent(event, "mod")
 
     def on_created(self, event):
-        self.process_event(event, "created")
+        self.checkEvent(event, "new")
 
     def on_deleted(self, event):
-        self.process_event(event, "deleted")
+        self.checkEvent(event, "gone")
 
-# Function to initialize the integrity baseline
-def initialize_baseline():
-    logging.info("Initializing file integrity baseline...")
-    baseline = {}
-    if not os.path.exists(MONITOR_DIR):
-        logging.warning(f"Monitor directory '{MONITOR_DIR}' does not exist. Creating it now.")
-        os.makedirs(MONITOR_DIR)
-    for root, _, files in os.walk(MONITOR_DIR):
-        for file in files:
-            file_path = os.path.join(root, file)
-            baseline[file_path] = compute_hash(file_path)
-    save_integrity_baseline(baseline)
-    return baseline
+# first time setup (baseline)
+def makeBaseline():
+    logging.info("making hash baseline...")
+    base = {}
+    if not os.path.exists(DIR_TO_WATCH):
+        logging.warning(f"umm where is '{DIR_TO_WATCH}' ?? making it now")
+        os.makedirs(DIR_TO_WATCH)
+    for root, _, files in os.walk(DIR_TO_WATCH):
+        for f in files:
+            fpath = os.path.join(root, f)
+            base[fpath] = getHash(fpath)
+    saveHashes(base)
+    return base
 
-# Main function to run the File Integrity Monitor
-def run_monitor():
-    if not os.path.exists(MONITOR_DIR):
-        os.makedirs(MONITOR_DIR)
+# start watching
+def startWatch():
+    if not os.path.exists(DIR_TO_WATCH):
+        os.makedirs(DIR_TO_WATCH)
 
-    baseline = load_integrity_baseline()
-    if not baseline:
-        baseline = initialize_baseline()
+    base = loadHashes()
+    if not base:
+        base = makeBaseline()
 
-    observer = Observer()
-    event_handler = IntegrityMonitor(baseline)
-    observer.schedule(event_handler, MONITOR_DIR, recursive=True)
-    observer.start()
+    obs = Observer()
+    evt_handler = FileWatch(base)
+    obs.schedule(evt_handler, DIR_TO_WATCH, recursive=True)
+    obs.start()
 
-    logging.info("File Integrity Monitor is running...")
+    logging.info("watching now...")
 
     try:
         while True:
             time.sleep(10)
     except KeyboardInterrupt:
-        observer.stop()
-        observer.join()
-        logging.info("File Integrity Monitor stopped.")
+        obs.stop()
+        obs.join()
+        logging.info("stopped watching.")
 
-# Run the File Integrity Monitor
+# go
 if __name__ == "__main__":
-    run_monitor()
+    startWatch()
